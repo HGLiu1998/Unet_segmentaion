@@ -21,7 +21,7 @@ import tensorflow as tf
 import colorsys
 from tensorflow.keras.models import load_model
 import datetime
-from sklearn.model_selection import KFold
+import tensorflowjs as tfjs
 
 
 sm.set_framework('tf.keras')
@@ -38,6 +38,7 @@ class Dataset():
     def __init__(self, config_path = './config/', only_Ul=True, augmentation=None, preprocessing=None):
         self.config_path = config_path
         if only_Ul:
+            self.config_path = './ul_config/'
             self.classes = 3
             self.color2index = {
                 (0, 0, 0) : 0, # _background_
@@ -48,6 +49,7 @@ class Dataset():
                 (128,0,128) : 1 # Eschar
             }
         else:
+            self.config_path = './other_config'
             self.classes = 4
             self.color2index = {
                 (0, 0, 0) : 0, # _background_
@@ -72,7 +74,7 @@ class Dataset():
             mask[img_id==c] = one_hot
         return mask
 
-    def load_data(self, split, data=None):
+    def load_data(self, validation_split=0.2, testing_split=0.1, data=None):
 
         if data != None:
             raw_dataset = tf.data.TFRecordDataset(filenames=data)
@@ -112,72 +114,78 @@ class Dataset():
             training_mask = []
             dirs = os.listdir(self.config_path)
             for d in dirs:
+                #print(d)
                 image = cv2.imread(self.config_path+d+'/img.png')
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 h, w, c = image.shape
-                #image = image[h//2-256:h//2+256, w//2-256:w//2+256]
-                image = tf.image.resize(image,(512,512), method='nearest').numpy()
-
-                training_data.append(image)
                 label = cv2.imread(self.config_path+d+'/label.png')
                 label = cv2.cvtColor(label, cv2.COLOR_BGR2RGB)
-                #image = tf.image.stateless_random_crop(image, size=)
-                #label = label[h//2-256:h//2+256, w//2-256:w//2+256]
+
+                #image, label = self.cropping(image, label)
+
+                image = tf.image.resize(image, (512,512), method='nearest').numpy()
                 label = tf.image.resize(label, (512,512), method='nearest').numpy()
-                #crop_data = np.concatenate((image, label), axis=2)
-                #crop_data = tf.image.random_crop(crop_data, (1024,1024,6))
-                #image = crop_data[:,:,:3].numpy()
-                #label = crop_data[:,:,3:].numpy()
-                cv2.imwrite('image.png',image)
-                cv2.imwrite('label.png',label)
-                label = self.rgb2mask(label, self.classes)     
+                
+                #cv2.imwrite('image.png',image)
+                #cv2.imwrite('label.png',label)
+                label = self.rgb2mask(label, self.classes)  
+
+                training_data.append(image)   
                 training_mask.append(label)
             
         
         training_data = np.squeeze(np.array(training_data))
         training_mask = np.squeeze(np.array(training_mask))
-        
         data_size = training_data.shape[0]
-        split_size = int(data_size * split)
-        split_size = data_size-split_size
+        training_size = data_size - int(data_size * (validation_split+testing_split))
+        validation_size = training_size + int(data_size * validation_split)
+        print(training_size)
+        print(validation_size)
         # data split
-        training_dataset = tf.data.Dataset.from_tensor_slices((training_data[:split_size], training_mask[:split_size]))
-        validation_dataset = tf.data.Dataset.from_tensor_slices((training_data[split_size:], training_mask[split_size:]))
+        training_dataset = tf.data.Dataset.from_tensor_slices((training_data[:training_size], training_mask[:training_size]))
+        validation_dataset = tf.data.Dataset.from_tensor_slices((training_data[training_size:validation_size], training_mask[training_size:validation_size]))
+        testing_dataset = tf.data.Dataset.from_tensor_slices((training_data[validation_size:], training_mask[validation_size:]))
         # data preprocessing and augmentation
         training_dataset = training_dataset.map(self.preprocessing, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        #training_dataset = training_dataset.map(self.augmentation, num_parallel_calls=tf.data.experimental.AUTOTUNE)
         training_dataset = training_dataset.shuffle(100)
-        training_dataset = training_dataset.batch(6)
+        training_dataset = training_dataset.batch(5)
         training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+        
         validation_dataset = validation_dataset.map(self.preprocessing, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        validation_dataset = validation_dataset.batch(6)
+        validation_dataset = validation_dataset.batch(5)
         validation_dataset = validation_dataset.prefetch(tf.data.experimental.AUTOTUNE)
-        #print(training_dataset, validation_dataset)
-        return training_dataset, validation_dataset
+        
+        testing_dataset = testing_dataset.map(self.preprocessing, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        testing_dataset = testing_dataset.batch(5)
+        testing_dataset = testing_dataset.prefetch(tf.data.experimental.AUTOTUNE)
+        print(testing_dataset, validation_dataset, testing_dataset)
+        return training_dataset, validation_dataset, testing_dataset
 
     def preprocessing(self, image, label):
-        image = tf.cast(image, tf.float64) / 255.0
+        image = tf.cast(image, tf.float32) / 255.0
         return image, label
     def augmentation(self, image, label):
-        image = tf.image.flip_left_right(image)
-        image = tf.image.rot90(image)
-    
+        image = tf.image.random_flip_left_right(image)
+        image = tf.image.random_flip_up_down(image)
+        image = tf.image.random_brightness(image, 0.2)
+        return image, label
 
 def main():
-    dataset = Dataset('./config/', False)
+   
+    dataset = Dataset('./config/', True)
     preprocess_input = sm.get_preprocessing(BACKBONE)
 
     model = sm.Unet(BACKBONE, classes=dataset.classes, activation='softmax', encoder_weights='imagenet')
 
-    #model.load_weights(MODEL_PATH)
-    # define optomizer
-    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        0.1,
-        decay_steps=710,
-        decay_rate=0.9,
-        staircase=True
-    )
+   
     optim = tf.keras.optimizers.Adam(learning_rate=0.1)
-    callback = [tf.keras.callbacks.ReduceLROnPlateau('val_acc', 0.1, 5, min_lr=1e-6)]
+    log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    callback = [
+        tf.keras.callbacks.ReduceLROnPlateau('val_f1-score', 0.5, 5, min_lr=5e-6),
+        tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1),
+        tf.keras.callbacks.ModelCheckpoint('{}.h5'.format(log_dir), monitor='val_f1-score', save_best_only=True,save_freq=10,mode='max')
+    ]
     # Segmentation models losses can be combined together by '+' and scaled by integer or float factor
     dice_loss = sm.losses.DiceLoss()
     focal_loss = sm.losses.CategoricalFocalLoss()
@@ -194,13 +202,16 @@ def main():
         sm.metrics.Accuracy(threshold=0.5),
     ]
 
-    log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+    #log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    #tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
 
+    
     model.compile(optimizer=tf.keras.optimizers.Adam(LR), loss=total_loss, metrics=metrics)
-    train_dataset, validation_dataset = dataset.load_data(0.1)
-    model.fit(train_dataset,batch_size=6,epochs=1000,validation_data=validation_dataset, callbacks=[callback])
+    train_dataset, validation_dataset, testing_dataset = dataset.load_data(0.1)
+    model.fit(train_dataset,batch_size=5,epochs=1000,validation_data=validation_dataset, callbacks=callback)
+    model.evaluate(testing_dataset,batch_size=5,callbacks=callback)
     model.save('Unet_Ulceration.h5')
+    tfjs.converters.save_keras_model(model, './js')
 
 if __name__ == '__main__':
     main()

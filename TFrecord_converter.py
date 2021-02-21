@@ -8,7 +8,7 @@ from tensorflow.python.ops.gen_logging_ops import image_summary
 
 def main():
 
-    data_dir = './config/'
+    data_dir = './ul_config/'
     tf_record = './train.tfrecords'
     dirs = os.listdir(data_dir)
     dirs.sort()
@@ -20,14 +20,13 @@ def main():
         for image, mask in zip(image_filenames, mask_filenames):
             image = cv2.imread(image)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            h, w, _ = image.shape
-            image = image[h//2-256:h//2+256, w//2-256:w//2+256]
+            image = tf.image.resize(image, (512,512), method='nearest').numpy()
             _h, _w, c = image.shape
             image_str = image.tostring()
 
             mask = cv2.imread(mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
-            mask = mask[h//2-256:h//2+256, w//2-256:w//2+256]
+            mask = tf.image.resize(mask, (512,512), method='nearest').numpy()
             mask_str = mask.tostring()
 
             feature = {
